@@ -127,7 +127,7 @@ class evaluate_U {
   const real_t c_grad_Z;
   const real_t c_grad_h;
   
-public :
+public:
   evaluate_U (GVAR_t Ux_, GVAR_t Uy_, 
               const GVAR_t grad_Zx_, const GVAR_t grad_Zy_, 
               const GVAR_t grad_hx_, const GVAR_t grad_hy_, 
@@ -137,14 +137,16 @@ public :
       grad_Zx(grad_Zx_), grad_Zy(grad_Zy_), 
       grad_hx(grad_hx_), grad_hy(grad_hy_), 
       h(h_), 
-      c_grad_Z(-tau_ * g_), 
-      c_grad_h(-tau_ * g_ - tau_ * gamma_) {};
-  
+      c_grad(-tau_ * g_),      // Costante comune per -tau * g * h * grad(Z + h)
+      c_gamma(-tau_ * gamma_)  // Costante per il termine di attrito -tau * gamma * grad(h)
+  {};
+ 
   DEVICE
   void
   operator()(idx_t ind) {
-    Ux[ind] = c_grad_Z * h[ind] * (grad_Zx[ind] + grad_hx[ind]) + c_grad_h * grad_hx[ind];
-    Uy[ind] = c_grad_Z * h[ind] * (grad_Zy[ind] + grad_hy[ind]) + c_grad_h * grad_hy[ind];
+    // -tau * g * h * (grad_Z + grad_h)  +  (-tau * gamma) * grad_h
+    Ux[ind] = c_grad * h[ind] * (grad_Zx[ind] + grad_hx[ind]) + c_gamma * grad_hx[ind];
+    Uy[ind] = c_grad * h[ind] * (grad_Zy[ind] + grad_hy[ind]) + c_gamma * grad_hy[ind];
   }  
 };
 
