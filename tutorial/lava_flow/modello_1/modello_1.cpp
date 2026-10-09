@@ -63,23 +63,29 @@ int main(){
  real_t hx = j["grid_properties"]["hx"];
  real_t hy = j["grid_properties"]["hy"];
 
+ // FORZIAMO L'ORIGINE LOCALE A 0.0 (Quadgrid ignora i valori geografici)
+ real_t x_min = 0.0;
+ real_t y_min = 0.0;
+
  real_t dt = j["physics_parameters"]["dt"];
+ real_t max_dt = j["physics_parameters"]["max_dt"]; 
  real_t tau = j["physics_parameters"]["tau"];
  real_t gamma = j["physics_parameters"]["gamma"];
  real_t g = j["physics_parameters"]["g"];
  real_t tmax = j["physics_parameters"]["t_max"];
  int nsave = j["physics_parameters"]["nsave"];
 
+ // I bordi massimi sono semplicemente nx * hx e ny * hy
  real_t x_max_domain = ncols * hx;
  real_t y_max_domain = nrows * hy;
 
- stepper step(
+stepper step(
    thrust::raw_pointer_cast(p.device_x.data()), 
    thrust::raw_pointer_cast(p.device_y.data()), 
-   thrust::raw_pointer_cast(p.device_dprops["ux"].data()), 
-   thrust::raw_pointer_cast(p.device_dprops["uy"].data()), 
+   thrust::raw_pointer_cast(p.device_dprops["vx"].data()), 
+   thrust::raw_pointer_cast(p.device_dprops["vy"].data()), 
    thrust::raw_pointer_cast(p.device_dprops["Vp"].data()), 
-   dt, x_max_domain, y_max_domain
+   dt, x_min, x_max_domain, y_min, y_max_domain // Passati i nuovi bordi
  );
 
  idx_t num_nodi = (nrows + 1) * (ncols + 1);
@@ -91,8 +97,10 @@ int main(){
  p.device_grid_vars["grad_hy"].resize(num_nodi, 0.0);
   
  p.device_grid_vars["h"].resize(num_nodi, 0.0);
- p.device_grid_vars["Ux"].resize(num_nodi, 0.0);
+ p.device_grid_vars["Ux"].resize(num_nodi, 0.0); //portata
  p.device_grid_vars["Uy"].resize(num_nodi, 0.0);
+ p.device_grid_vars["Vx"].resize(num_nodi, 0.0); //velocità
+ p.device_grid_vars["Vy"].resize(num_nodi, 0.0);
 
  evaluate_grad eval_grad_Z(
    thrust::raw_pointer_cast(p.device_grid_vars["grad_Zx"].data()),
@@ -117,7 +125,7 @@ int main(){
    nrows, ncols, hx, hy
  );
 
- evaluate_U eval_velocity(
+ evaluate_U eval_U(
    thrust::raw_pointer_cast(p.device_grid_vars["Ux"].data()),
    thrust::raw_pointer_cast(p.device_grid_vars["Uy"].data()),
    thrust::raw_pointer_cast(p.device_grid_vars["grad_Zx"].data()),
@@ -127,6 +135,20 @@ int main(){
    thrust::raw_pointer_cast(p.device_grid_vars["h"].data()),
    tau, gamma, g
 );
+
+extract_velocity get_kinematics(
+   thrust::raw_pointer_cast(p.device_grid_vars["Vx"].data()),
+   thrust::raw_pointer_cast(p.device_grid_vars["Vy"].data()),
+   thrust::raw_pointer_cast(p.device_grid_vars["Ux"].data()),
+   thrust::raw_pointer_cast(p.device_grid_vars["Uy"].data()),
+   thrust::raw_pointer_cast(p.device_grid_vars["h"].data())
+ );
+ 
+ // Inizializzazione del cratere
+ real_t Q_vent = j["eruption_parameters"]["Q"];
+ real_t total_volume_to_erupt = Q_vent * tmax;
+ real_t Vp_active = total_volume_to_erupt / static_cast<real_t>(p.num_particles);
+ int next_particle_to_activate = 0; //indice della particella da attivare
 
  double dtsave = tmax / nsave;
  double t = 0.;
@@ -160,6 +182,23 @@ int main(){
       thrust::fill(p.device_grid_vars["h"].begin(), p.device_grid_vars["h"].end(), 0.0);
       // Nota: Ux e Uy non richiedono thrust::fill poiché vengono sovrascritti interamente da evaluate_U
 
+      // INIEZIONE CONTINUA (PARTICLE ACTIVATION)
+      // Calcola quante particelle DEVONO essere accese a questo istante di tempo
+      real_t expected_volume = Q_vent * t; //Quanto ce ne aspettiamo in totale
+      int expected_active = std::min(static_cast<int>(expected_volume / Vp_active), p.num_particles); //Quante particelle
+      
+      int n_to_activate = expected_active - next_particle_to_activate; //Rendiamo un delta
+      
+      // Se è il momento di attivare un nuovo pacchetto, accendiamole in VRAM
+      if (n_to_activate > 0) {
+          thrust::fill(
+              p.device_dprops["Vp"].begin() + next_particle_to_activate,
+              p.device_dprops["Vp"].begin() + next_particle_to_activate + n_to_activate,
+              Vp_active //Fissiamo il volume delle particelle da attivare a Vp_active
+          );
+          next_particle_to_activate += n_to_activate; //Aggiorniamo per lo step successivo
+      }
+
       // P2G of Vp
       timer.tic("p2g");
       p.p2g(p.device_grid_vars, {"Vp"}, {"h"}, false); 
@@ -173,22 +212,28 @@ int main(){
   
       // Eval Ux and Uy
       thrust::for_each(first_node, last_node, eval_grad_h);
-      thrust::for_each(first_node, last_node, eval_velocity);
-     
-      // G2P of VX and VY
+      thrust::for_each(first_node, last_node, eval_U);
+      
+      // Eval Vx and Vy
+      thrust::for_each(first_node, last_node, get_kinematics);
+      // G2P of Vx and Vy
       timer.tic("g2p");
-      p.g2p(p.device_grid_vars, {"Ux", "Uy"}, {"ux", "uy"});
+      p.g2p(p.device_grid_vars, {"Vx", "Vy"}, {"vx", "vy"});
       timer.toc("g2p");
 
       // Compute dt (CFL condition)
       timer.tic("dt");
-      auto abs_vx = thrust::make_transform_iterator(p.device_dprops["ux"].begin(), abs_no_nan());
-      auto abs_vy = thrust::make_transform_iterator(p.device_dprops["uy"].begin(), abs_no_nan());
+      auto abs_vx = thrust::make_transform_iterator(p.device_dprops["vx"].begin(), abs_no_nan());
+      auto abs_vy = thrust::make_transform_iterator(p.device_dprops["vy"].begin(), abs_no_nan());
       real_t maxvx = *thrust::max_element(abs_vx, abs_vx + p.num_particles);
       real_t maxvy = *thrust::max_element(abs_vy, abs_vy + p.num_particles);
-      real_t dtx = maxvx > 0.0 ? .5 * hx / maxvx : dtsave * (isave + 1) - t;
-      real_t dty = maxvy > 0.0 ? .5 * hy / maxvy : dtsave * (isave + 1) - t;
-      step.set_dt(fmin(dtx, dty));
+         
+      real_t dtx = maxvx > 0.0 ? .5 * hx / maxvx : max_dt;
+      real_t dty = maxvy > 0.0 ? .5 * hy / maxvy : max_dt;
+      
+      // Prendi il più piccolo tra dtx, dty e il tetto massimo
+      step.set_dt(fmin(fmin(dtx, dty), max_dt));
+      
       if (t + step.get_dt() > dtsave * (isave + 1)) {
           step.set_dt(dtsave * (isave + 1) - t);
       }

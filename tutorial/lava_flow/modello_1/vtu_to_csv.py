@@ -62,9 +62,12 @@ hy_new = (np.max(y_unique) - np.min(y_unique)) / nrows_new
 print(f"New generated grid: {ncols_new} x {nrows_new} celle")
 print(f"New hx: {hx_new:.2f} m | New hy: {hy_new:.2f} m")
 
-# Calcolo del centro della mappa per posizionare il cratere in modo sicuro
-x_center = float(np.min(x_unique) + (ncols_new * hx_new) / 2.0)
-y_center = float(np.min(y_unique) + (nrows_new * hy_new) / 2.0)
+# # Calcolo del centro della mappa per posizionare il cratere in modo sicuro
+# x_center = float((ncols_new * hx_new) / 2.0)
+# y_center = float((nrows_new * hy_new) / 2.0)
+
+x_vent_assoluto = 753.34
+y_vent_assoluto = 1745.8
 
 # 5. Generazione del JSON
 sim_data = {
@@ -78,22 +81,24 @@ sim_data = {
     },
     "physics_parameters": {
         "g": 9.81,
-        "tau": 1000.0,
-        "gamma": 0.5,
+        "tau": 1.0,       # Sostituisce 'beta' (non usato nel modello diffusivo)
+        "gamma": 0.5,        # Coefficiente di attrito per il gradiente topografico
         "dt": 0.01,
-        "t_max": 0.02,
-        "nsave": 10
+        "max_dt": 0.1,
+        "t_max": 100.0,     # Durata stimata dell'evento effusivo dell'Etna
+        "nsave": 20        # Numero di salvataggi distribuiti sui 4000 secondi
     },
     "eruption_parameters": {
-        "x_vent": x_center,  # Ora usa il centro calcolato dinamicamente
-        "y_vent": y_center,  # Ora usa il centro calcolato dinamicamente
-        "radius_vent": 500.0, # Aumentato leggermente per compensare griglie coarse
-        "h_initial_lava": 5.0,
-        "particles_per_cell_x": 2,
-        "particles_per_cell_y": 2
+        # "x_vent": x_center,  # Sostituisci con le coordinate reali lette in ParaView
+        # "y_vent": y_center,  # Sostituisci con le coordinate reali lette in ParaView
+        "x_vent": x_vent_assoluto, 
+        "y_vent": y_vent_assoluto,
+        "radius_vent": 5.0,  # Ridotto: ora i punti lagrangiani sono svincolati dalle celle
+        "Q": 50.0,          # Portata del cratere stimata per l'Etna in m^3/s
+        "total_particles": 100000 # Nuovo sistema per distribuire omogeneamente le particelle
     },
     "grid_vars": {
-        "Z": Z_coarse.flatten().tolist() 
+        "Z": Z_coarse.flatten(order='F').tolist()
     }
 }
 

@@ -39,22 +39,29 @@ private :
   const PVAR_t uy;
   PVAR_t Vp;
   real_t dt; 
+  real_t x_min;
   real_t x_max;
+  real_t y_min;
   real_t y_max;
 
 public :
   stepper (PVAR_t x_, PVAR_t y_,
 	   const PVAR_t ux_, const PVAR_t uy_, PVAR_t Vp_,
-	   real_t dt_, real_t x_max_, real_t y_max_)
-    : x(x_), y(y_), ux(ux_), uy(uy_), Vp(Vp_), dt(dt_), x_max(x_max_), y_max(y_max_) { }
+	   real_t dt_, real_t x_min_, real_t x_max_, real_t y_min_, real_t y_max_)
+    : x(x_), y(y_), ux(ux_), uy(uy_), Vp(Vp_), dt(dt_), 
+      x_min(x_min_), x_max(x_max_), y_min(y_min_), y_max(y_max_) { }
 
   DEVICE
   void operator() (int n) {
-    x[n] += ux[n] * dt; 
-    y[n] += uy[n] * dt; 
+    // 1. Muove SOLO le particelle attivate
+    if (Vp[n] > 0.0) {
+        x[n] += ux[n] * dt; 
+        y[n] += uy[n] * dt; 
+    }
       
-    if (x[n] < 0.0 || x[n] > x_max || y[n] < 0.0 || y[n] > y_max) {
-        Vp[n] = 0.0; 
+    // 2. Rete di sicurezza con coordinate assolute
+    if (x[n] != x[n] || y[n] != y[n] || x[n] < x_min || x[n] > x_max || y[n] < y_min || y[n] > y_max) {
+        Vp[n] = 0.0; // La particella esce dal dominio e diventa inerte
     }
   } 
   real_t get_dt() const { return dt; }
@@ -124,8 +131,8 @@ class evaluate_U {
   const GVAR_t grad_hx;
   const GVAR_t grad_hy;
   const GVAR_t h;
-  const real_t c_grad_Z;
-  const real_t c_grad_h;
+  const real_t c_grad;
+  const real_t c_gamma;
   
 public:
   evaluate_U (GVAR_t Ux_, GVAR_t Uy_, 
@@ -147,6 +154,33 @@ public:
     // -tau * g * h * (grad_Z + grad_h)  +  (-tau * gamma) * grad_h
     Ux[ind] = c_grad * h[ind] * (grad_Zx[ind] + grad_hx[ind]) + c_gamma * grad_hx[ind];
     Uy[ind] = c_grad * h[ind] * (grad_Zy[ind] + grad_hy[ind]) + c_gamma * grad_hy[ind];
+  }  
+};
+
+template<typename GVAR_t>
+class extract_velocity {
+  using idx_t = particles_t::idx_t;
+  
+  GVAR_t Vx;
+  GVAR_t Vy;
+  const GVAR_t Ux;
+  const GVAR_t Uy;
+  const GVAR_t h;
+  
+public:
+  extract_velocity (GVAR_t Vx_, GVAR_t Vy_, const GVAR_t Ux_, const GVAR_t Uy_, const GVAR_t h_)
+    : Vx(Vx_), Vy(Vy_), Ux(Ux_), Uy(Uy_), h(h_) {};
+ 
+  DEVICE
+  void
+  operator()(idx_t ind) {
+    if (h[ind] > 1e-6) {
+        Vx[ind] = Ux[ind] / h[ind];
+        Vy[ind] = Uy[ind] / h[ind];
+    } else {
+        Vx[ind] = 0.0;
+        Vy[ind] = 0.0;
+    }
   }  
 };
 
